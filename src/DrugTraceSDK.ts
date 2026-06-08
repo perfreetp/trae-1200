@@ -264,9 +264,78 @@ export class DrugTraceSDK {
         dataSourceErrors[DataSourceCategory.RECALL] = recallResponse.errorMessage;
       }
 
-      // === 修复点2：外部数据源返回公告直接并入，不强制本地索引；有批号才二次过滤 ===
+      // === 修复点1 & 4：关键数据源失败 → 先逐类回退最近缓存，不整体覆盖；无缓存且主源非LOCAL → NETWORK_ERROR ===
+      const drugPrimaryNonLocal = drugResponse.primarySource !== DataSourceType.LOCAL;
+      const batchPrimaryNonLocal = batchResponse.primarySource !== DataSourceType.LOCAL;
+      const drugFatal = drugPrimaryNonLocal && !drugResponse.success;
+      const batchFatal = batchPrimaryNonLocal && !batchResponse.success;
+
+      let cachedFallback: TraceQueryResult | null = null;
+      if ((drugFatal || batchFatal) && this.config.enableCache) {
+        cachedFallback = this.cache.getQueryResult(trimmedCode) || null;
+      }
+
+      let usedDrugFromCache = false;
+      let usedBatchFromCache = false;
+      if (cachedFallback) {
+        if (drugFatal && cachedFallback.drugInfo) {
+          usedDrugFromCache = true;
+          dataSourceDetail[DataSourceCategory.DRUG] = {
+            ...dataSourceDetail[DataSourceCategory.DRUG],
+            sourceType: DataSourceType.LOCAL,
+            fallback: 'cache',
+            success: true,
+            errorMessage: undefined
+          };
+          dataSourceSummary[DataSourceCategory.DRUG] = DataSourceType.LOCAL;
+          delete dataSourceErrors[DataSourceCategory.DRUG];
+          this.eventManager.notifyDataSourceFallback(
+            DataSourceCategory.DRUG,
+            drugResponse.primarySource,
+            DataSourceType.LOCAL,
+            drugResponse.errorMessage || '药品数据源失败，已回退缓存'
+          );
+        }
+        if (batchFatal && cachedFallback.batchInfo) {
+          usedBatchFromCache = true;
+          dataSourceDetail[DataSourceCategory.BATCH] = {
+            ...dataSourceDetail[DataSourceCategory.BATCH],
+            sourceType: DataSourceType.LOCAL,
+            fallback: 'cache',
+            success: true,
+            errorMessage: undefined
+          };
+          dataSourceSummary[DataSourceCategory.BATCH] = DataSourceType.LOCAL;
+          delete dataSourceErrors[DataSourceCategory.BATCH];
+          this.eventManager.notifyDataSourceFallback(
+            DataSourceCategory.BATCH,
+            batchResponse.primarySource,
+            DataSourceType.LOCAL,
+            batchResponse.errorMessage || '批次数据源失败，已回退缓存'
+          );
+        }
+      }
+
+      // === 修复点1：药品主源非LOCAL且失败时，不允许用parseResult兜底伪造"未知药品" ===
+      const allowDrugParseFallback = drugResponse.primarySource === DataSourceType.LOCAL
+        || drugResponse.success
+        || usedDrugFromCache;
+      const drugDataForMerge = drugResponse.success
+        ? drugResponse.data
+        : (usedDrugFromCache ? (cachedFallback?.drugInfo || null) : null);
+      const mergedDrugInfo = allowDrugParseFallback
+        ? this.mergeDrugInfo(parseResult, drugDataForMerge, approvalNumber)
+        : (usedDrugFromCache ? this.mergeDrugInfo(parseResult, cachedFallback?.drugInfo || null, approvalNumber) : null);
+
+      const batchDataForMerge = batchResponse.success
+        ? batchResponse.data
+        : (usedBatchFromCache ? (cachedFallback?.batchInfo || null) : null);
+      const finalBatchInfo = this.mergeBatchInfo(batchDataForMerge);
+
+      // === 修复点3：外部召回公告只接受HTTP/CUSTOM主源返回的，LOCAL源走严格匹配分支 ===
       const externalRecallNotices: RecallNotice[] = [];
-      if (recallResponse.success && recallResponse.data && recallResponse.data.length > 0) {
+      const recallPrimaryNonLocal = recallResponse.primarySource !== DataSourceType.LOCAL;
+      if (recallPrimaryNonLocal && recallResponse.success && recallResponse.data && recallResponse.data.length > 0) {
         const notices = recallResponse.data.filter(n => {
           if (!finalBatchNumber) return true;
           return n.affectedBatches.some(b => b.trim() === finalBatchNumber.trim());
@@ -287,7 +356,7 @@ export class DrugTraceSDK {
         }
       );
 
-      // === 修复点5：召回公告按recallId去重，外部+本地合并 ===
+      // 召回公告按recallId去重，外部+本地合并
       const dedupNoticesMap = new Map<string, RecallNotice>();
       externalRecallNotices.forEach(n => dedupNoticesMap.set(n.recallId, n));
       recallResult.notices.forEach(n => dedupNoticesMap.set(n.recallId, n));
@@ -300,52 +369,32 @@ export class DrugTraceSDK {
         hasActiveRecall: dedupHasActiveRecall
       });
 
-      // === 修复点1：关键数据源失败 → 优先回退最近缓存，无缓存才返回 NETWORK_ERROR ===
-      const criticalFailed = !drugResponse.success || !batchResponse.success;
-      if (criticalFailed) {
-        const cached = this.cache.getQueryResult(trimmedCode);
-        if (cached) {
-          const fallbackResult = this.handleCacheHit(cached, querySource, options?.batchNumber);
-          fallbackResult.errorMessage = Object.values(dataSourceErrors).filter(Boolean).join('; ') || '数据源失败，已回退最近缓存';
-          fallbackResult.dataSourceErrors = { ...fallbackResult.dataSourceErrors, ...dataSourceErrors };
-          if (fallbackResult.dataSourceDetail) {
-            Object.values(DataSourceCategory).forEach((cat: DataSourceCategory) => {
-              if (fallbackResult.dataSourceDetail && dataSourceDetail[cat]) {
-                fallbackResult.dataSourceDetail[cat] = {
-                  ...dataSourceDetail[cat],
-                  fallback: 'cache' as const,
-                  sourceType: DataSourceType.LOCAL
-                };
-                if (fallbackResult.dataSourceSummary) {
-                  fallbackResult.dataSourceSummary[cat] = DataSourceType.LOCAL;
-                }
-              }
-            });
-          }
-          this.eventManager.notifyDataSourceFallback(
-            DataSourceCategory.DRUG,
-            dataSourceDetail[DataSourceCategory.DRUG].primarySource,
-            DataSourceType.LOCAL,
-            fallbackResult.errorMessage
-          );
-          return fallbackResult;
-        }
-      }
-
-      const mergedDrugInfo = this.mergeDrugInfo(parseResult, drugResponse.success ? drugResponse.data : null, approvalNumber);
-      const finalBatchInfo = this.mergeBatchInfo(batchResponse.success ? batchResponse.data : null);
-
       const voucher = this.eventManager.generateQueryVoucher(trimmedCode, querySource, undefined, undefined);
 
       let finalStatus = verificationResult.status;
-      // 如果关键数据源全部失败且无缓存，标记NETWORK_ERROR
-      const criticalAllFailed = !drugResponse.success && !mergedDrugInfo;
-      if (criticalAllFailed) {
+
+      // === 修复点1：关键数据源主源非LOCAL、失败、且缓存也没补上 → 明确NETWORK_ERROR ===
+      const drugMissingFinal = drugFatal && !usedDrugFromCache && !mergedDrugInfo;
+      const batchMissingFinal = batchFatal && !usedBatchFromCache && !finalBatchInfo;
+      if (drugMissingFinal || batchMissingFinal) {
         finalStatus = VerificationStatus.NETWORK_ERROR;
-        Object.values(DataSourceCategory).forEach((cat: DataSourceCategory) => {
-          dataSourceDetail[cat] = { ...dataSourceDetail[cat], success: false };
-        });
+        // 标记关键类别的detail为失败
+        if (drugMissingFinal) {
+          dataSourceDetail[DataSourceCategory.DRUG] = {
+            ...dataSourceDetail[DataSourceCategory.DRUG],
+            success: false,
+            errorMessage: dataSourceErrors[DataSourceCategory.DRUG] || '药品数据源失败'
+          };
+        }
+        if (batchMissingFinal) {
+          dataSourceDetail[DataSourceCategory.BATCH] = {
+            ...dataSourceDetail[DataSourceCategory.BATCH],
+            success: false,
+            errorMessage: dataSourceErrors[DataSourceCategory.BATCH] || '批次数据源失败'
+          };
+        }
       }
+
       if (finalBatchInfo?.isExpired && finalStatus === VerificationStatus.VERIFIED) {
         finalStatus = VerificationStatus.EXPIRED;
       }
@@ -364,6 +413,13 @@ export class DrugTraceSDK {
         finalErrorMessage.push(parseResult.parseErrors.join('; '));
       }
       Object.values(dataSourceErrors).forEach(e => e && finalErrorMessage.push(e));
+      if (finalStatus === VerificationStatus.NETWORK_ERROR && finalErrorMessage.length === 0) {
+        const fatalItems = [
+          drugMissingFinal ? '药品数据源' : null,
+          batchMissingFinal ? '批次数据源' : null
+        ].filter(Boolean);
+        finalErrorMessage.push(`${fatalItems.join('、')}查询失败，请检查接口配置或网络`);
+      }
 
       const result: TraceQueryResult = {
         success: parseResult.isValidFormat && finalStatus !== VerificationStatus.NETWORK_ERROR,

@@ -1,0 +1,24 @@
+{
+  "name": "drug-trace-sdk",
+  "version": "1.0.0",
+  "description": "药品追溯查询 SDK - 供医院自助机、电商售药页和企业客服系统嵌入追溯能力",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "drug",
+    "traceability",
+    "sdk",
+    "药品追溯",
+    "药品溯源"
+  ],
+  "author": "DrugTrace Team",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

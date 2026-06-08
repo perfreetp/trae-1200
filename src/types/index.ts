@@ -90,6 +90,7 @@ export interface DataSourceResponse<T> {
   data: T | null;
   errorMessage?: string;
   sourceType: DataSourceType;
+  primarySource: DataSourceType;
   latency: number;
   fallbackUsed: boolean;
 }
@@ -188,6 +189,14 @@ export interface CustomMessages {
   recallDetected?: string;
 }
 
+export interface DataSourceDetail {
+  sourceType: DataSourceType;
+  primarySource: DataSourceType;
+  success: boolean;
+  errorMessage?: string;
+  fallback?: 'cache' | 'local' | 'none';
+}
+
 export interface TraceQueryResult {
   success: boolean;
   code: string;
@@ -209,6 +218,7 @@ export interface TraceQueryResult {
   customMessage?: string;
   errorMessage?: string;
   dataSourceSummary?: Record<DataSourceCategory, DataSourceType>;
+  dataSourceDetail?: Record<DataSourceCategory, DataSourceDetail>;
   dataSourceErrors?: Partial<Record<DataSourceCategory, string>>;
 }
 

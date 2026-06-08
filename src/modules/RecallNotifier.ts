@@ -53,6 +53,7 @@ interface RecallMapping {
 export class RecallNotifierModule {
   private notices: RecallNotice[];
   private codeBatchMap: Map<string, string[]> = new Map();
+  private userCodeBatchMap: Map<string, string[]> = new Map();
   private approvalToRecallMap: Map<string, string[]> = new Map();
   private batchToRecallMap: Map<string, string[]> = new Map();
   private explicitMappings: RecallMapping[] = [];
@@ -104,10 +105,17 @@ export class RecallNotifierModule {
       }
 
       // 2) 显式映射（用户主动建立的，始终尊重）
+      // === 修复点3：严格模式+未传批号时，不使用SDK内部自动建立的codeBatchMap，只用用户显式userCodeBatchMap ===
       if (codeOrApproval) {
-        const byCodeBatches = this.codeBatchMap.get(codeOrApproval.trim());
-        if (byCodeBatches && byCodeBatches.length > 0) {
-          for (const batch of byCodeBatches) {
+        const allowInternalCodeMap = !strictMode || !!batchNumber;
+        let byCodeBatches: string[] = [];
+        if (allowInternalCodeMap) {
+          byCodeBatches = this.codeBatchMap.get(codeOrApproval.trim()) || [];
+        }
+        const userBatches = this.userCodeBatchMap.get(codeOrApproval.trim()) || [];
+        const allCodeBatches = [...new Set([...byCodeBatches, ...userBatches])];
+        if (allCodeBatches.length > 0) {
+          for (const batch of allCodeBatches) {
             const byBatch = this.batchToRecallMap.get(batch);
             if (byBatch) {
               byBatch.forEach(id => matchedIds.add(id));
@@ -294,8 +302,8 @@ export class RecallNotifierModule {
 
   addCodeBatchMapping(code: string, batches: string[]): void {
     const key = code.trim();
-    const existing = this.codeBatchMap.get(key) || [];
-    this.codeBatchMap.set(key, [...new Set([...existing, ...batches])]);
+    const existing = this.userCodeBatchMap.get(key) || [];
+    this.userCodeBatchMap.set(key, [...new Set([...existing, ...batches])]);
   }
 
   addApprovalBatchMapping(approvalNumber: string, batches: string[]): void {

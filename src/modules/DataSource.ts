@@ -87,6 +87,7 @@ export class LocalDataSource implements IDataSourceAdapter {
       success: !!drug,
       data: drug || null,
       sourceType: DataSourceType.LOCAL,
+      primarySource: DataSourceType.LOCAL,
       latency: Date.now() - startTime,
       fallbackUsed: false,
       errorMessage: drug ? undefined : '本地数据源未找到药品信息'
@@ -112,6 +113,7 @@ export class LocalDataSource implements IDataSourceAdapter {
         success: false,
         data: null,
         sourceType: DataSourceType.LOCAL,
+        primarySource: DataSourceType.LOCAL,
         latency: Date.now() - startTime,
         fallbackUsed: false,
         errorMessage: '本地数据源未找到批次信息'
@@ -142,6 +144,7 @@ export class LocalDataSource implements IDataSourceAdapter {
       success: true,
       data: batchInfo,
       sourceType: DataSourceType.LOCAL,
+      primarySource: DataSourceType.LOCAL,
       latency: Date.now() - startTime,
       fallbackUsed: false
     };
@@ -164,6 +167,7 @@ export class LocalDataSource implements IDataSourceAdapter {
       success: !!nodes && nodes.length > 0,
       data: nodes || [],
       sourceType: DataSourceType.LOCAL,
+      primarySource: DataSourceType.LOCAL,
       latency: Date.now() - startTime,
       fallbackUsed: false,
       errorMessage: nodes && nodes.length > 0 ? undefined : '本地数据源未找到流向信息'
@@ -193,6 +197,7 @@ export class LocalDataSource implements IDataSourceAdapter {
       success: true,
       data: matched,
       sourceType: DataSourceType.LOCAL,
+      primarySource: DataSourceType.LOCAL,
       latency: Date.now() - startTime,
       fallbackUsed: false
     };
@@ -318,6 +323,7 @@ export class HttpDataSource implements IDataSourceAdapter {
       data: result.success ? result.data || null : null,
       errorMessage: result.errorMessage,
       sourceType: DataSourceType.HTTP,
+      primarySource: DataSourceType.HTTP,
       latency: result.success ? result.latency : Date.now() - startTime,
       fallbackUsed: false
     };
@@ -338,6 +344,7 @@ export class HttpDataSource implements IDataSourceAdapter {
       data: result.success ? result.data || null : null,
       errorMessage: result.errorMessage,
       sourceType: DataSourceType.HTTP,
+      primarySource: DataSourceType.HTTP,
       latency: result.success ? result.latency : Date.now() - startTime,
       fallbackUsed: false
     };
@@ -359,6 +366,7 @@ export class HttpDataSource implements IDataSourceAdapter {
       data: result.success ? result.data || [] : [],
       errorMessage: result.errorMessage,
       sourceType: DataSourceType.HTTP,
+      primarySource: DataSourceType.HTTP,
       latency: result.success ? result.latency : Date.now() - startTime,
       fallbackUsed: false
     };
@@ -380,6 +388,7 @@ export class HttpDataSource implements IDataSourceAdapter {
       data: result.success ? result.data || [] : [],
       errorMessage: result.errorMessage,
       sourceType: DataSourceType.HTTP,
+      primarySource: DataSourceType.HTTP,
       latency: result.success ? result.latency : Date.now() - startTime,
       fallbackUsed: false
     };
@@ -410,6 +419,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: null,
         errorMessage: '未配置药品查询处理器',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -422,6 +432,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: data || null,
         errorMessage: data ? undefined : '自定义数据源未找到药品信息',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -431,6 +442,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: null,
         errorMessage: error instanceof Error ? error.message : '自定义查询异常',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -449,6 +461,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: null,
         errorMessage: '未配置批次查询处理器',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -461,6 +474,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: data || null,
         errorMessage: data ? undefined : '自定义数据源未找到批次信息',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -470,6 +484,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: null,
         errorMessage: error instanceof Error ? error.message : '自定义查询异常',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -489,6 +504,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: [],
         errorMessage: '未配置流向查询处理器',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -500,6 +516,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         success: true,
         data: data || [],
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -509,6 +526,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: [],
         errorMessage: error instanceof Error ? error.message : '自定义查询异常',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -528,6 +546,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: [],
         errorMessage: '未配置召回查询处理器',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -539,6 +558,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         success: true,
         data: data || [],
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -548,6 +568,7 @@ export class CustomDataSource implements IDataSourceAdapter {
         data: [],
         errorMessage: error instanceof Error ? error.message : '自定义查询异常',
         sourceType: DataSourceType.CUSTOM,
+        primarySource: DataSourceType.CUSTOM,
         latency: Date.now() - startTime,
         fallbackUsed: false
       };
@@ -606,82 +627,103 @@ export class DataSourceRouter {
   private async withFallback<T>(
     category: DataSourceCategory,
     primaryFn: (adapter: IDataSourceAdapter) => Promise<DataSourceResponse<T>>,
-    fallbackFn: () => Promise<DataSourceResponse<T>>
+    fallbackFn: () => Promise<DataSourceResponse<T>>,
+    options?: { disableLocalFallback?: boolean }
   ): Promise<DataSourceResponse<T>> {
     const adapter = this.getAdapter(category);
     const primary = adapter.getType();
-    let result = await primaryFn(adapter);
+    const raw = await primaryFn(adapter);
+    const result: DataSourceResponse<T> = {
+      ...raw,
+      primarySource: raw.primarySource || primary
+    };
 
-    if (!result.success && this.config.fallbackToLocal && primary !== DataSourceType.LOCAL) {
-      this.emit(
-        'fallback', {
-        category,
-        from: primary,
-        to: DataSourceType.LOCAL,
-        error: result.errorMessage
-      });
-      const fallback = await fallbackFn();
-      return {
-        ...fallback,
-        fallbackUsed: true
-      };
-    }
-
+    // === 修复点1：失败时不自动回退 LOCAL，保留失败信息让上层 SDK 判断是否回退 CACHE ===
     if (!result.success) {
       this.emit('error', {
         category,
         source: primary,
         error: result.errorMessage
       });
+
+      if (
+        !options?.disableLocalFallback &&
+        this.config.fallbackToLocal &&
+        primary !== DataSourceType.LOCAL
+      ) {
+        this.emit('fallback', {
+          category,
+          from: primary,
+          to: DataSourceType.LOCAL,
+          error: result.errorMessage,
+          type: 'local'
+        });
+        const fallback = await fallbackFn();
+        return {
+          ...fallback,
+          primarySource: primary,
+          fallbackUsed: true
+        };
+      }
+      return result;
     }
 
+    result.primarySource = result.primarySource || primary;
     return result;
   }
 
   async queryDrug(
     code: string,
     approvalNumber?: string,
-    codeType?: CodeType
+    codeType?: CodeType,
+    options?: { disableLocalFallback?: boolean }
   ): Promise<DataSourceResponse<DrugBasicInfo>> {
     return this.withFallback(
       DataSourceCategory.DRUG,
       (adapter) => adapter.fetchDrugInfo(code, approvalNumber, codeType),
-      () => this.localSource.fetchDrugInfo(code, approvalNumber, codeType)
+      () => this.localSource.fetchDrugInfo(code, approvalNumber, codeType),
+      options
     );
   }
 
   async queryBatch(
     approvalNumber: string,
-    batchNumber?: string
+    batchNumber?: string,
+    options?: { disableLocalFallback?: boolean }
   ): Promise<DataSourceResponse<BatchInfo>> {
     return this.withFallback(
       DataSourceCategory.BATCH,
       (adapter) => adapter.fetchBatchInfo(approvalNumber, batchNumber),
-      () => this.localSource.fetchBatchInfo(approvalNumber, batchNumber)
+      () => this.localSource.fetchBatchInfo(approvalNumber, batchNumber),
+      options
     );
   }
 
   async queryFlow(
     code: string,
     approvalNumber?: string,
-    batchNumber?: string
+    batchNumber?: string,
+    options?: { disableLocalFallback?: boolean }
   ): Promise<DataSourceResponse<FlowNode[]>> {
     return this.withFallback(
       DataSourceCategory.FLOW,
       (adapter) => adapter.fetchFlowNodes(code, approvalNumber, batchNumber),
-      () => this.localSource.fetchFlowNodes(code, approvalNumber, batchNumber)
+      () => this.localSource.fetchFlowNodes(code, approvalNumber, batchNumber),
+      options
     );
   }
 
   async queryRecall(
     code: string,
     approvalNumber?: string,
-    batchNumber?: string
+    batchNumber?: string,
+    options?: { disableLocalFallback?: boolean }
   ): Promise<DataSourceResponse<RecallNotice[]>> {
     return this.withFallback(
       DataSourceCategory.RECALL,
       (adapter) => adapter.fetchRecallNotices(code, approvalNumber, batchNumber),
-      () => this.localSource.fetchRecallNotices(code, approvalNumber, batchNumber)
+      () => this.localSource.fetchRecallNotices(code, approvalNumber, batchNumber),
+      options
     );
   }
 

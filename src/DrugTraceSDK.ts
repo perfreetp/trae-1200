@@ -18,6 +18,7 @@ import {
   RecallNotice,
   DataSourceType,
   DataSourceCategory,
+  DataSourceDetail,
   VoucherSummary,
   QueryAuditRecord,
   AuditFilter,
@@ -183,22 +184,45 @@ export class DrugTraceSDK {
         [DataSourceCategory.RECALL]: DataSourceType.LOCAL
       };
       const dataSourceErrors: Partial<Record<DataSourceCategory, string>> = {};
+      const dataSourceDetail: Record<DataSourceCategory, DataSourceDetail> = {
+        [DataSourceCategory.DRUG]: { sourceType: DataSourceType.LOCAL, primarySource: DataSourceType.LOCAL, success: true, fallback: 'none' },
+        [DataSourceCategory.BATCH]: { sourceType: DataSourceType.LOCAL, primarySource: DataSourceType.LOCAL, success: true, fallback: 'none' },
+        [DataSourceCategory.FLOW]: { sourceType: DataSourceType.LOCAL, primarySource: DataSourceType.LOCAL, success: true, fallback: 'none' },
+        [DataSourceCategory.RECALL]: { sourceType: DataSourceType.LOCAL, primarySource: DataSourceType.LOCAL, success: true, fallback: 'none' }
+      };
 
+      // === 修复点1：传入 disableLocalFallback=true，失败时不自动伪装本地成功 ===
       const drugResponse = await this.dataSourceRouter.queryDrug(
         trimmedCode,
         approvalNumber,
-        parseResult.codeType
+        parseResult.codeType,
+        { disableLocalFallback: true }
       );
       dataSourceSummary[DataSourceCategory.DRUG] = drugResponse.sourceType;
+      dataSourceDetail[DataSourceCategory.DRUG] = {
+        sourceType: drugResponse.sourceType,
+        primarySource: drugResponse.primarySource,
+        success: drugResponse.success,
+        errorMessage: drugResponse.errorMessage,
+        fallback: drugResponse.fallbackUsed ? 'local' : 'none'
+      };
       if (!drugResponse.success && drugResponse.errorMessage) {
         dataSourceErrors[DataSourceCategory.DRUG] = drugResponse.errorMessage;
       }
 
       const batchResponse = await this.dataSourceRouter.queryBatch(
         approvalNumber,
-        finalBatchNumber
+        finalBatchNumber,
+        { disableLocalFallback: true }
       );
       dataSourceSummary[DataSourceCategory.BATCH] = batchResponse.sourceType;
+      dataSourceDetail[DataSourceCategory.BATCH] = {
+        sourceType: batchResponse.sourceType,
+        primarySource: batchResponse.primarySource,
+        success: batchResponse.success,
+        errorMessage: batchResponse.errorMessage,
+        fallback: batchResponse.fallbackUsed ? 'local' : 'none'
+      };
       if (!batchResponse.success && batchResponse.errorMessage) {
         dataSourceErrors[DataSourceCategory.BATCH] = batchResponse.errorMessage;
       }
@@ -206,29 +230,54 @@ export class DrugTraceSDK {
       const flowResponse = await this.dataSourceRouter.queryFlow(
         trimmedCode,
         approvalNumber,
-        finalBatchNumber
+        finalBatchNumber,
+        { disableLocalFallback: true }
       );
       dataSourceSummary[DataSourceCategory.FLOW] = flowResponse.sourceType;
+      dataSourceDetail[DataSourceCategory.FLOW] = {
+        sourceType: flowResponse.sourceType,
+        primarySource: flowResponse.primarySource,
+        success: flowResponse.success,
+        errorMessage: flowResponse.errorMessage,
+        fallback: flowResponse.fallbackUsed ? 'local' : 'none'
+      };
       if (!flowResponse.success && flowResponse.errorMessage) {
         dataSourceErrors[DataSourceCategory.FLOW] = flowResponse.errorMessage;
       }
 
-      // === 修复点1：召回走数据源路由，不再闭合本地 ===
+      // === 修复点2：召回走数据源路由，失败不自动回退本地 ===
       const recallResponse = await this.dataSourceRouter.queryRecall(
         trimmedCode,
         approvalNumber,
-        finalBatchNumber
+        finalBatchNumber,
+        { disableLocalFallback: true }
       );
       dataSourceSummary[DataSourceCategory.RECALL] = recallResponse.sourceType;
+      dataSourceDetail[DataSourceCategory.RECALL] = {
+        sourceType: recallResponse.sourceType,
+        primarySource: recallResponse.primarySource,
+        success: recallResponse.success,
+        errorMessage: recallResponse.errorMessage,
+        fallback: recallResponse.fallbackUsed ? 'local' : 'none'
+      };
       if (!recallResponse.success && recallResponse.errorMessage) {
         dataSourceErrors[DataSourceCategory.RECALL] = recallResponse.errorMessage;
       }
 
-      // === 修复点2：外部召回公告注入本地索引后再严格匹配 ===
+      // === 修复点2：外部数据源返回公告直接并入，不强制本地索引；有批号才二次过滤 ===
+      const externalRecallNotices: RecallNotice[] = [];
       if (recallResponse.success && recallResponse.data && recallResponse.data.length > 0) {
-        recallResponse.data.forEach(n => this.recallNotifier.addRecallNotice(n));
+        const notices = recallResponse.data.filter(n => {
+          if (!finalBatchNumber) return true;
+          return n.affectedBatches.some(b => b.trim() === finalBatchNumber.trim());
+        });
+        notices.forEach(n => {
+          externalRecallNotices.push(n);
+          this.recallNotifier.addRecallNotice(n);
+        });
       }
 
+      // 本地索引匹配（严格模式）
       const recallResult = this.recallNotifier.queryRecalls(
         trimmedCode,
         finalBatchNumber,
@@ -238,8 +287,9 @@ export class DrugTraceSDK {
         }
       );
 
-      // === 修复点5：召回公告按recallId去重 ===
+      // === 修复点5：召回公告按recallId去重，外部+本地合并 ===
       const dedupNoticesMap = new Map<string, RecallNotice>();
+      externalRecallNotices.forEach(n => dedupNoticesMap.set(n.recallId, n));
       recallResult.notices.forEach(n => dedupNoticesMap.set(n.recallId, n));
       const dedupNotices = Array.from(dedupNoticesMap.values());
       const dedupHasActiveRecall = dedupNotices.some(n => n.recallStatus === RecallStatus.ACTIVE);
@@ -250,17 +300,31 @@ export class DrugTraceSDK {
         hasActiveRecall: dedupHasActiveRecall
       });
 
-      // === 修复点2：数据源失败时回退最近缓存，再考虑空结果 ===
+      // === 修复点1：关键数据源失败 → 优先回退最近缓存，无缓存才返回 NETWORK_ERROR ===
       const criticalFailed = !drugResponse.success || !batchResponse.success;
       if (criticalFailed) {
         const cached = this.cache.getQueryResult(trimmedCode);
         if (cached) {
           const fallbackResult = this.handleCacheHit(cached, querySource, options?.batchNumber);
-          fallbackResult.errorMessage = Object.values(dataSourceErrors).join('; ') || '数据源失败，已回退最近缓存';
+          fallbackResult.errorMessage = Object.values(dataSourceErrors).filter(Boolean).join('; ') || '数据源失败，已回退最近缓存';
           fallbackResult.dataSourceErrors = { ...fallbackResult.dataSourceErrors, ...dataSourceErrors };
+          if (fallbackResult.dataSourceDetail) {
+            Object.values(DataSourceCategory).forEach((cat: DataSourceCategory) => {
+              if (fallbackResult.dataSourceDetail && dataSourceDetail[cat]) {
+                fallbackResult.dataSourceDetail[cat] = {
+                  ...dataSourceDetail[cat],
+                  fallback: 'cache' as const,
+                  sourceType: DataSourceType.LOCAL
+                };
+                if (fallbackResult.dataSourceSummary) {
+                  fallbackResult.dataSourceSummary[cat] = DataSourceType.LOCAL;
+                }
+              }
+            });
+          }
           this.eventManager.notifyDataSourceFallback(
-            'ALL',
-            dataSourceSummary[DataSourceCategory.DRUG],
+            DataSourceCategory.DRUG,
+            dataSourceDetail[DataSourceCategory.DRUG].primarySource,
             DataSourceType.LOCAL,
             fallbackResult.errorMessage
           );
@@ -268,15 +332,19 @@ export class DrugTraceSDK {
         }
       }
 
-      const mergedDrugInfo = this.mergeDrugInfo(parseResult, drugResponse.data, approvalNumber);
-      const finalBatchInfo = this.mergeBatchInfo(batchResponse.data);
+      const mergedDrugInfo = this.mergeDrugInfo(parseResult, drugResponse.success ? drugResponse.data : null, approvalNumber);
+      const finalBatchInfo = this.mergeBatchInfo(batchResponse.success ? batchResponse.data : null);
 
       const voucher = this.eventManager.generateQueryVoucher(trimmedCode, querySource, undefined, undefined);
 
       let finalStatus = verificationResult.status;
       // 如果关键数据源全部失败且无缓存，标记NETWORK_ERROR
-      if (!drugResponse.success && !mergedDrugInfo) {
+      const criticalAllFailed = !drugResponse.success && !mergedDrugInfo;
+      if (criticalAllFailed) {
         finalStatus = VerificationStatus.NETWORK_ERROR;
+        Object.values(DataSourceCategory).forEach((cat: DataSourceCategory) => {
+          dataSourceDetail[cat] = { ...dataSourceDetail[cat], success: false };
+        });
       }
       if (finalBatchInfo?.isExpired && finalStatus === VerificationStatus.VERIFIED) {
         finalStatus = VerificationStatus.EXPIRED;
@@ -308,7 +376,7 @@ export class DrugTraceSDK {
         queryCount: verificationResult.queryCount,
         firstQueryTime: verificationResult.firstQueryTime,
         lastQueryTime: verificationResult.lastQueryTime,
-        flowNodes: flowResponse.data || [],
+        flowNodes: flowResponse.success ? (flowResponse.data || []) : [],
         recallNotices: dedupNotices,
         hasRecall: dedupHasActiveRecall,
         queryVoucher: voucher,
@@ -318,6 +386,7 @@ export class DrugTraceSDK {
         customMessage,
         errorMessage: finalErrorMessage.length > 0 ? finalErrorMessage.join('; ') : undefined,
         dataSourceSummary,
+        dataSourceDetail,
         dataSourceErrors
       };
 

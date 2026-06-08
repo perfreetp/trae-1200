@@ -4,10 +4,14 @@ import {
   EventCallbackData,
   CustomMessages,
   VerificationStatus,
-  QuerySource
+  QuerySource,
+  QueryVoucher,
+  VoucherSummary,
+  TraceQueryResult,
+  DrugBasicInfo,
+  BatchInfo
 } from '../types';
-import { generateVoucher, validateVoucher, generateId } from '../utils';
-import type { QueryVoucher } from '../types';
+import { generateVoucher, validateVoucher, generateId, generateHash } from '../utils';
 
 type ListenerMap = Map<EventType, Set<EventCallback>>;
 
@@ -22,11 +26,32 @@ const DEFAULT_MESSAGES: Required<CustomMessages> = {
   recallDetected: '注意：该药品涉及召回，请查看召回详情'
 };
 
+const SOURCE_NAMES: Record<QuerySource, string> = {
+  [QuerySource.HOSPITAL_KIOSK]: '医院自助机',
+  [QuerySource.E_COMMERCE]: '电商售药页',
+  [QuerySource.CUSTOMER_SERVICE]: '企业客服系统',
+  [QuerySource.MOBILE_APP]: '移动APP',
+  [QuerySource.WEBSITE]: '官方网站',
+  [QuerySource.OTHER]: '其他渠道'
+};
+
+const STATUS_NAMES: Record<VerificationStatus, string> = {
+  [VerificationStatus.VERIFIED]: '✅ 验证通过',
+  [VerificationStatus.SUSPECTED_FAKE]: '⚠️ 疑似假码',
+  [VerificationStatus.INVALID]: '❌ 无效条码',
+  [VerificationStatus.EXPIRED]: '⏰ 药品过期',
+  [VerificationStatus.DUPLICATE]: '📋 重复查询',
+  [VerificationStatus.NETWORK_ERROR]: '🌐 网络异常',
+  [VerificationStatus.PENDING]: '⏳ 待验证'
+};
+
 export class EventManager {
   private listeners: ListenerMap = new Map();
   private customMessages: Required<CustomMessages>;
   private querySource: QuerySource;
   private voucherHistory: Map<string, QueryVoucher> = new Map();
+  private voucherToResultMap: Map<string, TraceQueryResult> = new Map();
+  private voucherIdToResultMap: Map<string, TraceQueryResult> = new Map();
 
   constructor(
     customMessages?: CustomMessages,
@@ -145,10 +170,18 @@ export class EventManager {
   generateQueryVoucher(
     code: string,
     querySource?: QuerySource,
-    ttl?: number
+    ttl?: number,
+    queryResult?: TraceQueryResult
   ): QueryVoucher {
-    const voucher = generateVoucher(code, querySource || this.querySource, ttl);
+    const actualSource = querySource || this.querySource;
+    const voucher = generateVoucher(code, actualSource, ttl);
     this.voucherHistory.set(voucher.voucherId, voucher);
+    this.voucherHistory.set(code, voucher);
+
+    if (queryResult) {
+      this.voucherToResultMap.set(voucher.voucherId, queryResult);
+      this.voucherIdToResultMap.set(voucher.voucherId, queryResult);
+    }
 
     this.emit(EventType.VOUCHER_GENERATED, {
       code,
@@ -167,7 +200,7 @@ export class EventManager {
       let resolvedVoucher: QueryVoucher;
 
       if (typeof voucher === 'string') {
-        resolvedVoucher = this.voucherHistory.get(voucher)!;
+        resolvedVoucher = this.voucherHistory.get(voucher) as QueryVoucher;
         if (!resolvedVoucher) {
           return { valid: false, error: '凭证不存在' };
         }
@@ -193,17 +226,109 @@ export class EventManager {
     return this.voucherHistory.get(voucherId) || null;
   }
 
+  getQueryResultByVoucher(voucherOrId: QueryVoucher | string): TraceQueryResult | null {
+    const voucherId = typeof voucherOrId === 'string'
+      ? voucherOrId
+      : voucherOrId.voucherId;
+    return this.voucherIdToResultMap.get(voucherId) || null;
+  }
+
+  generateVoucherSummary(
+    voucherOrId: QueryVoucher | string,
+    resultOverride?: TraceQueryResult
+  ): {
+    summary: VoucherSummary | null;
+    error?: string;
+  } {
+    try {
+      let voucher: QueryVoucher;
+      if (typeof voucherOrId === 'string') {
+        const found = this.voucherHistory.get(voucherOrId);
+        if (!found) {
+          return { summary: null, error: '凭证不存在' };
+        }
+        voucher = found;
+      } else {
+        voucher = voucherOrId;
+      }
+
+      const validation = this.validateQueryVoucher(voucher);
+      if (!validation.valid) {
+        return { summary: null, error: validation.error };
+      }
+
+      const queryResult = resultOverride || this.getQueryResultByVoucher(voucher);
+      if (!queryResult) {
+        return { summary: null, error: '未找到对应查询结果' };
+      }
+
+      const drugInfo: DrugBasicInfo | null = queryResult.drugInfo;
+      const batchInfo: BatchInfo | null = queryResult.batchInfo;
+
+      const displayItems = [
+        `【药品追溯查询凭证】`,
+        `─────────────────────`,
+        `编号: ${voucher.voucherId}`,
+        `药品: ${drugInfo?.drugName || '未知'}`,
+        `规格: ${drugInfo?.specification || '-'}`,
+        `批号: ${batchInfo?.batchNumber || '-'}`,
+        `企业: ${drugInfo?.manufacturer || '-'}`,
+        `来源: ${SOURCE_NAMES[voucher.querySource] || voucher.querySource}`,
+        `时间: ${new Date(voucher.queryTime).toLocaleString('zh-CN')}`,
+        `状态: ${STATUS_NAMES[queryResult.verificationStatus] || queryResult.verificationStatus}`,
+        batchInfo ? `有效期: ${batchInfo.daysToExpire > 0 ? `剩余${batchInfo.daysToExpire}天` : '已过期'}` : '',
+        `─────────────────────`,
+        `校验码: ${this.buildShortIntegrityCode(voucher)}`,
+        `完整性: ${validation.valid ? '✅ 有效' : '❌ 无效'}`
+      ].filter(Boolean).join('\n');
+
+      const summary: VoucherSummary = {
+        voucherId: voucher.voucherId,
+        drugName: drugInfo?.drugName || '未知药品',
+        batchNumber: batchInfo?.batchNumber || '无',
+        specification: drugInfo?.specification || '-',
+        manufacturer: drugInfo?.manufacturer || '-',
+        querySource: voucher.querySource,
+        querySourceName: SOURCE_NAMES[voucher.querySource] || voucher.querySource,
+        queryTime: voucher.queryTime,
+        verificationStatus: queryResult.verificationStatus,
+        verificationStatusName: STATUS_NAMES[queryResult.verificationStatus] || queryResult.verificationStatus,
+        daysToExpire: batchInfo?.daysToExpire,
+        isExpired: batchInfo?.isExpired ?? false,
+        integrityVerified: validation.valid,
+        integrityHash: this.buildShortIntegrityCode(voucher),
+        displayText: displayItems
+      };
+
+      return { summary };
+    } catch (error) {
+      return {
+        summary: null,
+        error: `生成摘要失败: ${error instanceof Error ? error.message : '未知错误'}`
+      };
+    }
+  }
+
+  associateResultWithVoucher(voucherId: string, result: TraceQueryResult): void {
+    this.voucherIdToResultMap.set(voucherId, result);
+  }
+
   getAllVouchers(): QueryVoucher[] {
-    return Array.from(this.voucherHistory.values());
+    return Array.from(this.voucherHistory.values()).filter(
+      v => typeof v === 'object' && 'voucherId' in v
+    );
   }
 
   clearExpiredVouchers(): number {
     const now = new Date();
     let cleared = 0;
 
-    for (const [id, voucher] of this.voucherHistory) {
-      if (new Date(voucher.expireTime) <= now) {
-        this.voucherHistory.delete(id);
+    for (const [key, voucher] of this.voucherHistory) {
+      if (typeof voucher === 'object' && 'expireTime' in voucher && new Date(voucher.expireTime) <= now) {
+        this.voucherHistory.delete(key);
+        if ('voucherId' in voucher) {
+          this.voucherIdToResultMap.delete(voucher.voucherId);
+        }
         cleared++;
       }
     }
@@ -219,10 +344,15 @@ export class EventManager {
     return this.querySource;
   }
 
-  recordQuerySource(code: string, source: QuerySource, extra?: Record<string, unknown>): {
+  recordQuerySource(
+    code: string,
+    source: QuerySource,
+    extra?: Record<string, unknown>
+  ): {
     recordId: string;
     code: string;
     source: QuerySource;
+    sourceName: string;
     timestamp: string;
     extra?: Record<string, unknown>;
   } {
@@ -230,6 +360,7 @@ export class EventManager {
       recordId: generateId(),
       code,
       source: source || this.querySource,
+      sourceName: SOURCE_NAMES[source || this.querySource],
       timestamp: new Date().toISOString(),
       extra
     };
@@ -288,5 +419,23 @@ export class EventManager {
     this.emit(EventType.EXPIRED_CACHE_CLEANED, {
       data: { cleanedCount }
     });
+  }
+
+  notifyDataSourceError(category: string, source: string, error: string): void {
+    this.emit(EventType.DATA_SOURCE_ERROR, {
+      data: { category, source, error }
+    });
+  }
+
+  notifyDataSourceFallback(category: string, from: string, to: string, error: string): void {
+    this.emit(EventType.DATA_SOURCE_FALLBACK, {
+      data: { category, from, to, error }
+    });
+  }
+
+  private buildShortIntegrityCode(voucher: QueryVoucher): string {
+    const data = `${voucher.voucherId}${voucher.code}${voucher.queryTime}${voucher.signature}`;
+    const hash = generateHash(data, 'voucher-integrity');
+    return hash.substring(0, 8).toUpperCase();
   }
 }

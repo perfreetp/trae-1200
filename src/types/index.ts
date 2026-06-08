@@ -65,7 +65,33 @@ export enum EventType {
   CACHE_HIT = 'cache_hit',
   CACHE_MISS = 'cache_miss',
   EXPIRED_CACHE_CLEANED = 'expired_cache_cleaned',
-  VOUCHER_GENERATED = 'voucher_generated'
+  VOUCHER_GENERATED = 'voucher_generated',
+  DATA_SOURCE_ERROR = 'data_source_error',
+  DATA_SOURCE_FALLBACK = 'data_source_fallback',
+  AUDIT_LOGGED = 'audit_logged',
+  AUDIT_EXPORTED = 'audit_exported'
+}
+
+export enum DataSourceType {
+  LOCAL = 'local',
+  HTTP = 'http',
+  CUSTOM = 'custom'
+}
+
+export enum DataSourceCategory {
+  DRUG = 'drug',
+  BATCH = 'batch',
+  FLOW = 'flow',
+  RECALL = 'recall'
+}
+
+export interface DataSourceResponse<T> {
+  success: boolean;
+  data: T | null;
+  errorMessage?: string;
+  sourceType: DataSourceType;
+  latency: number;
+  fallbackUsed: boolean;
 }
 
 export interface DrugBasicInfo {
@@ -182,6 +208,82 @@ export interface TraceQueryResult {
   fromCache: boolean;
   customMessage?: string;
   errorMessage?: string;
+  dataSourceSummary?: Record<DataSourceCategory, DataSourceType>;
+}
+
+export interface QueryAuditRecord {
+  auditId: string;
+  source: QuerySource;
+  sourceIdentifier: string;
+  queryTime: string;
+  code: string;
+  codeType: CodeType;
+  resultStatus: VerificationStatus;
+  isSuspectedFake: boolean;
+  hasRecall: boolean;
+  voucherId: string;
+  drugName?: string;
+  batchNumber?: string;
+  queryCount: number;
+  fromCache: boolean;
+  dataSources?: Partial<Record<DataSourceCategory, DataSourceType>>;
+  extra?: Record<string, unknown>;
+}
+
+export interface AuditFilter {
+  sources?: QuerySource[];
+  sourceIdentifiers?: string[];
+  startTime?: string;
+  endTime?: string;
+  isSuspectedFake?: boolean;
+  hasRecall?: boolean;
+  resultStatuses?: VerificationStatus[];
+  codes?: string[];
+  voucherIds?: string[];
+}
+
+export interface VoucherSummary {
+  voucherId: string;
+  drugName: string;
+  batchNumber: string;
+  specification: string;
+  manufacturer: string;
+  querySource: QuerySource;
+  querySourceName: string;
+  queryTime: string;
+  verificationStatus: VerificationStatus;
+  verificationStatusName: string;
+  daysToExpire?: number;
+  isExpired: boolean;
+  integrityVerified: boolean;
+  integrityHash: string;
+  displayText: string;
+}
+
+export interface DataSourceConfig {
+  drug?: DataSourceType;
+  batch?: DataSourceType;
+  flow?: DataSourceType;
+  recall?: DataSourceType;
+  fallbackToLocal: boolean;
+  httpConfig?: {
+    baseUrl: string;
+    apiKey?: string;
+    timeout?: number;
+    retryAttempts?: number;
+    endpoints?: {
+      drug?: string;
+      batch?: string;
+      flow?: string;
+      recall?: string;
+    };
+  };
+  customHandlers?: {
+    drug?: (code: string, approvalNumber?: string) => Promise<DrugBasicInfo | null>;
+    batch?: (approvalNumber: string, batchNumber?: string) => Promise<BatchInfo | null>;
+    flow?: (code: string, approvalNumber?: string, batchNumber?: string) => Promise<FlowNode[]>;
+    recall?: (code: string, approvalNumber?: string, batchNumber?: string) => Promise<RecallNotice[]>;
+  };
 }
 
 export interface SDKConfig {
@@ -199,6 +301,10 @@ export interface SDKConfig {
   timeout?: number;
   retryAttempts?: number;
   retryDelay?: number;
+  dataSource?: DataSourceConfig;
+  enableAuditLog?: boolean;
+  auditLogPersistence?: boolean;
+  recallStrictMatch?: boolean;
 }
 
 export interface EventCallbackData {

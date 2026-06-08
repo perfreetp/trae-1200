@@ -20,6 +20,17 @@ export type { CacheStats, CacheCategory } from './modules/CacheManager';
 
 export { EventManager } from './modules/EventManager';
 
+export {
+  LocalDataSource,
+  HttpDataSource,
+  CustomDataSource,
+  DataSourceRouter
+} from './modules/DataSource';
+export type { IDataSourceAdapter } from './modules/DataSource';
+
+export { AuditLogger } from './modules/AuditLogger';
+export type { ExportFormat } from './modules/AuditLogger';
+
 export * from './types';
 
 export * from './utils';

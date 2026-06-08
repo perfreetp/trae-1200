@@ -1,9 +1,14 @@
-import { RecallNotice, RecallLevel, RecallStatus } from '../types';
+import { RecallNotice, RecallLevel, RecallStatus, DataSourceType } from '../types';
 
 export interface RecallQueryResult {
   notices: RecallNotice[];
   hasActiveRecall: boolean;
   highestLevel?: RecallLevel;
+  matchedBy: {
+    approvalNumber?: boolean;
+    batchNumber?: boolean;
+    explicitMapping?: boolean;
+  };
   errorMessage?: string;
 }
 
@@ -39,42 +44,113 @@ const DEFAULT_RECALL_NOTICES: RecallNotice[] = [
   }
 ];
 
+interface RecallMapping {
+  approvalNumbers: string[];
+  codes: string[];
+  recallIds: string[];
+}
+
 export class RecallNotifierModule {
   private notices: RecallNotice[];
   private codeBatchMap: Map<string, string[]> = new Map();
+  private approvalToRecallMap: Map<string, string[]> = new Map();
+  private batchToRecallMap: Map<string, string[]> = new Map();
+  private explicitMappings: RecallMapping[] = [];
+  private strictMatch: boolean;
 
-  constructor(initialNotices?: RecallNotice[]) {
+  constructor(
+    initialNotices?: RecallNotice[],
+    strictMatch: boolean = true
+  ) {
     this.notices = [...DEFAULT_RECALL_NOTICES, ...(initialNotices || [])];
-    this.buildCodeBatchMap();
+    this.strictMatch = strictMatch;
+    this.buildDefaultIndexes();
   }
 
   queryRecalls(
     codeOrApproval?: string,
     batchNumber?: string,
-    options?: { includeInactive?: boolean }
+    options?: {
+      includeInactive?: boolean;
+      approvalNumber?: string;
+      useStrictMatch?: boolean;
+    }
   ): RecallQueryResult {
     try {
       const includeInactive = options?.includeInactive ?? false;
-      let filtered = [...this.notices];
+      const strictMode = options?.useStrictMatch ?? this.strictMatch;
+      const approvalNumber = options?.approvalNumber || codeOrApproval;
 
-      if (!includeInactive) {
-        filtered = filtered.filter(n => n.recallStatus === RecallStatus.ACTIVE);
-      }
+      const matchedBy: RecallQueryResult['matchedBy'] = {
+        approvalNumber: false,
+        batchNumber: false,
+        explicitMapping: false
+      };
+
+      let matchedIds = new Set<string>();
 
       if (batchNumber) {
-        filtered = filtered.filter(n =>
-          n.affectedBatches.includes(batchNumber.trim())
-        );
+        const byBatch = this.batchToRecallMap.get(batchNumber.trim());
+        if (byBatch && byBatch.length > 0) {
+          byBatch.forEach(id => matchedIds.add(id));
+          matchedBy.batchNumber = true;
+        }
+      }
+
+      if (approvalNumber) {
+        const byApproval = this.approvalToRecallMap.get(approvalNumber.trim());
+        if (byApproval && byApproval.length > 0) {
+          byApproval.forEach(id => matchedIds.add(id));
+          matchedBy.approvalNumber = true;
+        }
       }
 
       if (codeOrApproval) {
-        const key = codeOrApproval.trim();
-        const mappedBatches = this.codeBatchMap.get(key);
-        if (mappedBatches) {
-          filtered = filtered.filter(n =>
-            n.affectedBatches.some(b => mappedBatches.includes(b))
-          );
+        const byCodeBatches = this.codeBatchMap.get(codeOrApproval.trim());
+        if (byCodeBatches && byCodeBatches.length > 0) {
+          for (const batch of byCodeBatches) {
+            const byBatch = this.batchToRecallMap.get(batch);
+            if (byBatch) {
+              byBatch.forEach(id => matchedIds.add(id));
+              matchedBy.explicitMapping = true;
+            }
+          }
         }
+
+        for (const mapping of this.explicitMappings) {
+          const codeMatch = mapping.codes.includes(codeOrApproval.trim());
+          const approvalMatch = approvalNumber && mapping.approvalNumbers.includes(approvalNumber.trim());
+          if (codeMatch || approvalMatch) {
+            mapping.recallIds.forEach(id => matchedIds.add(id));
+            matchedBy.explicitMapping = true;
+          }
+        }
+      }
+
+      if (strictMode && matchedIds.size === 0) {
+        return {
+          notices: [],
+          hasActiveRecall: false,
+          matchedBy,
+          errorMessage: batchNumber || approvalNumber || codeOrApproval
+            ? '严格匹配模式下未找到关联的召回公告'
+            : undefined
+        };
+      }
+
+      let filtered = this.notices.filter(n => {
+        const idMatched = matchedIds.size > 0 ? matchedIds.has(n.recallId) : true;
+        const statusOk = includeInactive ? true : n.recallStatus === RecallStatus.ACTIVE;
+        return idMatched && statusOk;
+      });
+
+      if (!strictMode) {
+        filtered = filtered.filter(n => {
+          if (n.recallStatus !== RecallStatus.ACTIVE && !includeInactive) {
+            return false;
+          }
+          return true;
+        });
       }
 
       filtered.sort((a, b) => {
@@ -92,12 +168,14 @@ export class RecallNotifierModule {
       return {
         notices: filtered,
         hasActiveRecall,
-        highestLevel
+        highestLevel,
+        matchedBy
       };
     } catch (error) {
       return {
         notices: [],
         hasActiveRecall: false,
+        matchedBy: {},
         errorMessage: `召回查询失败: ${error instanceof Error ? error.message : '未知错误'}`
       };
     }
@@ -112,12 +190,14 @@ export class RecallNotifierModule {
       return {
         notices: filtered,
         hasActiveRecall: filtered.some(n => n.recallStatus === RecallStatus.ACTIVE),
-        highestLevel: level
+        highestLevel: level,
+        matchedBy: {}
       };
     } catch (error) {
       return {
         notices: [],
         hasActiveRecall: false,
+        matchedBy: {},
         errorMessage: `召回查询失败: ${error instanceof Error ? error.message : '未知错误'}`
       };
     }
@@ -141,9 +221,14 @@ export class RecallNotifierModule {
     level2: number;
     level3: number;
     latestPublishDate?: string;
+    strictMatched: boolean;
   } {
     const result = this.queryRecalls(codeOrApproval, batchNumber, { includeInactive: true });
     const notices = result.notices;
+    const strictMatched =
+      result.matchedBy.approvalNumber ||
+      result.matchedBy.batchNumber ||
+      result.matchedBy.explicitMapping;
 
     return {
       total: notices.length,
@@ -155,7 +240,8 @@ export class RecallNotifierModule {
         ? notices.reduce((latest, n) =>
           new Date(n.publishDate) > new Date(latest.publishDate) ? n : latest
         ).publishDate
-        : undefined
+        : undefined,
+      strictMatched
     };
   }
 
@@ -165,6 +251,7 @@ export class RecallNotifierModule {
         return false;
       }
       this.notices.push(notice);
+      this.indexNotice(notice);
       return true;
     } catch {
       return false;
@@ -181,7 +268,8 @@ export class RecallNotifierModule {
   removeRecallNotice(recallId: string): boolean {
     const index = this.notices.findIndex(n => n.recallId === recallId);
     if (index < 0) return false;
-    this.notices.splice(index, 1);
+    const removed = this.notices.splice(index, 1)[0];
+    this.unindexNotice(removed);
     return true;
   }
 
@@ -191,14 +279,64 @@ export class RecallNotifierModule {
     this.codeBatchMap.set(key, [...new Set([...existing, ...batches])]);
   }
 
+  addApprovalBatchMapping(approvalNumber: string, batches: string[]): void {
+    const key = approvalNumber.trim();
+    batches.forEach(batch => {
+      const existing = this.batchToRecallMap.get(batch) || [];
+      const relatedRecalls = this.notices.filter(n => n.affectedBatches.includes(batch)).map(n => n.recallId);
+      if (relatedRecalls.length > 0) {
+        this.batchToRecallMap.set(batch, [...new Set([...existing, ...relatedRecalls])]);
+      }
+    });
+
+    const existingApproval = this.approvalToRecallMap.get(key) || [];
+    const related = batches
+      .flatMap(b => this.batchToRecallMap.get(b) || [])
+      .filter(Boolean);
+    if (related.length > 0) {
+      this.approvalToRecallMap.set(key, [...new Set([...existingApproval, ...related])]);
+    }
+  }
+
+  addExplicitMapping(mapping: {
+    approvalNumbers?: string[];
+    codes?: string[];
+    recallIds: string[];
+  }): void {
+    const validRecallIds = mapping.recallIds.filter(id =>
+      this.notices.some(n => n.recallId === id)
+    );
+
+    this.explicitMappings.push({
+      approvalNumbers: mapping.approvalNumbers?.map(s => s.trim()) || [],
+      codes: mapping.codes?.map(s => s.trim()) || [],
+      recallIds: validRecallIds
+    });
+
+    if (mapping.approvalNumbers) {
+      for (const approval of mapping.approvalNumbers) {
+        const existing = this.approvalToRecallMap.get(approval.trim()) || [];
+        this.approvalToRecallMap.set(approval.trim(), [...new Set([...existing, ...validRecallIds])]);
+      }
+    }
+  }
+
   removeCodeBatchMapping(code: string): boolean {
     return this.codeBatchMap.delete(code.trim());
   }
 
+  setStrictMatch(strict: boolean): void {
+    this.strictMatch = strict;
+  }
+
+  isStrictMatch(): boolean {
+    return this.strictMatch;
+  }
+
   clearAll(): void {
     this.notices = [...DEFAULT_RECALL_NOTICES];
-    this.codeBatchMap.clear();
-    this.buildCodeBatchMap();
+    this.explicitMappings = [];
+    this.buildDefaultIndexes();
   }
 
   getAllNotices(): RecallNotice[] {
@@ -223,10 +361,100 @@ export class RecallNotifierModule {
     return statusMap[status] || '未知状态';
   }
 
-  private buildCodeBatchMap(): void {
-    const defaultMap = new Map<string, string[]>([
-      ['1234567890123', ['B20230901', 'B20231001', 'B20231101']]
+  getMappingsFor(approvalNumber?: string, code?: string): {
+    relatedBatches: string[];
+    relatedRecallIds: string[];
+  } {
+    const relatedBatches = new Set<string>();
+    const relatedRecallIds = new Set<string>();
+
+    if (code) {
+      const batches = this.codeBatchMap.get(code.trim());
+      if (batches) batches.forEach(b => relatedBatches.add(b));
+
+      for (const mapping of this.explicitMappings) {
+        if (mapping.codes.includes(code.trim())) {
+          mapping.recallIds.forEach(id => relatedRecallIds.add(id));
+        }
+      }
+    }
+
+    if (approvalNumber) {
+      const approvals = this.approvalToRecallMap.get(approvalNumber.trim());
+      if (approvals) approvals.forEach(id => relatedRecallIds.add(id));
+
+      for (const mapping of this.explicitMappings) {
+        if (mapping.approvalNumbers.includes(approvalNumber.trim())) {
+          mapping.recallIds.forEach(id => relatedRecallIds.add(id));
+        }
+      }
+    }
+
+    for (const batch of relatedBatches) {
+      const recalls = this.batchToRecallMap.get(batch);
+      if (recalls) recalls.forEach(id => relatedRecallIds.add(id));
+    }
+
+    return {
+      relatedBatches: Array.from(relatedBatches),
+      relatedRecallIds: Array.from(relatedRecallIds)
+    };
+  }
+
+  private buildDefaultIndexes(): void {
+    const defaultMappings = new Map<string, string[]>([
+      ['1234567890123', ['B20230901', 'B20231001', 'B20231101']],
+      ['国药准字H13021234', ['B20230901', 'B20231001', 'B20231101']]
     ]);
-    this.codeBatchMap = new Map(defaultMap);
+
+    this.codeBatchMap = new Map();
+    this.approvalToRecallMap = new Map();
+    this.batchToRecallMap = new Map();
+
+    defaultMappings.forEach((batches, code) => {
+      if (/^\d+$/.test(code)) {
+        this.codeBatchMap.set(code, batches);
+      } else {
+        batches.forEach(batch => {
+          for (const notice of DEFAULT_RECALL_NOTICES) {
+            if (notice.affectedBatches.includes(batch)) {
+              const existingApproval = this.approvalToRecallMap.get(code) || [];
+              this.approvalToRecallMap.set(code, [...new Set([...existingApproval, notice.recallId])]);
+
+              const existingBatch = this.batchToRecallMap.get(batch) || [];
+              this.batchToRecallMap.set(batch, [...new Set([...existingBatch, notice.recallId])]);
+            }
+          }
+        });
+      }
+    });
+
+    for (const notice of DEFAULT_RECALL_NOTICES) {
+      for (const batch of notice.affectedBatches) {
+        const existing = this.batchToRecallMap.get(batch) || [];
+        this.batchToRecallMap.set(batch, [...new Set([...existing, notice.recallId])]);
+      }
+    }
+  }
+
+  private indexNotice(notice: RecallNotice): void {
+    for (const batch of notice.affectedBatches) {
+      const existing = this.batchToRecallMap.get(batch) || [];
+      this.batchToRecallMap.set(batch, [...new Set([...existing, notice.recallId])]);
+    }
+  }
+
+  private unindexNotice(notice: RecallNotice): void {
+    for (const batch of notice.affectedBatches) {
+      const existing = this.batchToRecallMap.get(batch);
+      if (existing) {
+        const filtered = existing.filter(id => id !== notice.recallId);
+        if (filtered.length === 0) {
+          this.batchToRecallMap.delete(batch);
+        } else {
+          this.batchToRecallMap.set(batch, filtered);
+        }
+      }
+    }
   }
 }

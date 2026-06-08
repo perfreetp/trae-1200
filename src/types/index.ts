@@ -209,6 +209,7 @@ export interface TraceQueryResult {
   customMessage?: string;
   errorMessage?: string;
   dataSourceSummary?: Record<DataSourceCategory, DataSourceType>;
+  dataSourceErrors?: Partial<Record<DataSourceCategory, string>>;
 }
 
 export interface QueryAuditRecord {

@@ -45,6 +45,47 @@ export class VerificationModule {
     this.codeScanner = codeScanner || new CodeScanner();
   }
 
+  checkSuspectedFake(
+    code: string,
+    codeType: CodeType
+  ): {
+    isSuspectedFake: boolean;
+    fakeReasons: string[];
+  } {
+    const fakeReasons: string[] = [];
+
+    const formatValid = this.checkFormatValidity(code);
+    if (!formatValid.valid) {
+      fakeReasons.push(...formatValid.reasons);
+    }
+
+    if (this.isInBlacklist(code)) {
+      fakeReasons.push('该条码在黑名单中');
+    }
+
+    const patternIssues = this.checkPatternIssues(code);
+    fakeReasons.push(...patternIssues);
+
+    const checkDigitValid = this.codeScanner.validateCheckDigit(code);
+    if (!checkDigitValid) {
+      fakeReasons.push('校验位验证失败');
+    }
+
+    const suspiciousPattern = this.codeScanner.checkSuspiciousPattern(code);
+    if (suspiciousPattern) {
+      fakeReasons.push('条码格式疑似异常');
+    }
+
+    if (codeType === CodeType.UNKNOWN) {
+      fakeReasons.push('无法识别的条码类型');
+    }
+
+    return {
+      isSuspectedFake: fakeReasons.length > 0,
+      fakeReasons
+    };
+  }
+
   verify(
     code: string,
     codeType: CodeType,

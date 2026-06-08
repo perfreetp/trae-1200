@@ -62,7 +62,11 @@ export class RecallNotifierModule {
     initialNotices?: RecallNotice[],
     strictMatch: boolean = true
   ) {
-    this.notices = [...DEFAULT_RECALL_NOTICES, ...(initialNotices || [])];
+    // === 修复点5：构造时按recallId全局去重 ===
+    const dedupMap = new Map<string, RecallNotice>();
+    DEFAULT_RECALL_NOTICES.forEach(n => dedupMap.set(n.recallId, n));
+    (initialNotices || []).forEach(n => dedupMap.set(n.recallId, n));
+    this.notices = Array.from(dedupMap.values());
     this.strictMatch = strictMatch;
     this.buildDefaultIndexes();
   }
@@ -89,6 +93,8 @@ export class RecallNotifierModule {
 
       let matchedIds = new Set<string>();
 
+      // === 修复点4：严格匹配逻辑 ===
+      // 1) 批号精确匹配（最高优先级）
       if (batchNumber) {
         const byBatch = this.batchToRecallMap.get(batchNumber.trim());
         if (byBatch && byBatch.length > 0) {
@@ -97,14 +103,7 @@ export class RecallNotifierModule {
         }
       }
 
-      if (approvalNumber) {
-        const byApproval = this.approvalToRecallMap.get(approvalNumber.trim());
-        if (byApproval && byApproval.length > 0) {
-          byApproval.forEach(id => matchedIds.add(id));
-          matchedBy.approvalNumber = true;
-        }
-      }
-
+      // 2) 显式映射（用户主动建立的，始终尊重）
       if (codeOrApproval) {
         const byCodeBatches = this.codeBatchMap.get(codeOrApproval.trim());
         if (byCodeBatches && byCodeBatches.length > 0) {
@@ -127,6 +126,22 @@ export class RecallNotifierModule {
         }
       }
 
+      // 3) 批准文号匹配：严格模式下，仅当有批号或显式映射辅助确认时才生效
+      //    宽松模式下可以单独使用
+      if (approvalNumber) {
+        const byApproval = this.approvalToRecallMap.get(approvalNumber.trim());
+        if (byApproval && byApproval.length > 0) {
+          if (!strictMode) {
+            byApproval.forEach(id => matchedIds.add(id));
+            matchedBy.approvalNumber = true;
+          } else if (batchNumber || matchedBy.explicitMapping) {
+            // 严格模式：批准文号需要配合批号或显式映射使用
+            byApproval.forEach(id => matchedIds.add(id));
+            matchedBy.approvalNumber = true;
+          }
+        }
+      }
+
       if (strictMode && matchedIds.size === 0) {
         return {
           notices: [],
@@ -139,19 +154,22 @@ export class RecallNotifierModule {
       }
 
       let filtered = this.notices.filter(n => {
-        const idMatched = matchedIds.size > 0 ? matchedIds.has(n.recallId) : true;
+        const idMatched = matchedIds.size > 0 ? matchedIds.has(n.recallId) : !strictMode;
         const statusOk = includeInactive ? true : n.recallStatus === RecallStatus.ACTIVE;
-        return idMatched && statusOk;
+        // === 修复点4：二次校验——严格模式下，若指定了批号，批号必须在公告affectedBatches中 ===
+        const batchOk = strictMode && batchNumber
+          ? n.affectedBatches.includes(batchNumber.trim())
+          : true;
+        return idMatched && statusOk && batchOk;
       });
 
-      if (!strictMode) {
-        filtered = filtered.filter(n => {
-          if (n.recallStatus !== RecallStatus.ACTIVE && !includeInactive) {
-            return false;
-          }
-          return true;
-        });
-      }
+      // === 修复点5：按recallId去重 ===
+      const idSeen = new Set<string>();
+      filtered = filtered.filter(n => {
+        if (idSeen.has(n.recallId)) return false;
+        idSeen.add(n.recallId);
+        return true;
+      });
 
       filtered.sort((a, b) => {
         const levelOrder = {
@@ -230,6 +248,7 @@ export class RecallNotifierModule {
       result.matchedBy.batchNumber ||
       result.matchedBy.explicitMapping;
 
+    // === 修复点5：按去重后的结果统计 ===
     return {
       total: notices.length,
       active: notices.filter(n => n.recallStatus === RecallStatus.ACTIVE).length,
@@ -241,7 +260,7 @@ export class RecallNotifierModule {
           new Date(n.publishDate) > new Date(latest.publishDate) ? n : latest
         ).publishDate
         : undefined,
-      strictMatched
+      strictMatched: !!strictMatched
     };
   }
 
@@ -290,9 +309,13 @@ export class RecallNotifierModule {
     });
 
     const existingApproval = this.approvalToRecallMap.get(key) || [];
-    const related = batches
-      .flatMap(b => this.batchToRecallMap.get(b) || [])
-      .filter(Boolean);
+    const related: string[] = [];
+    batches.forEach((b: string) => {
+      const recalls = this.batchToRecallMap.get(b);
+      if (recalls) {
+        related.push(...recalls);
+      }
+    });
     if (related.length > 0) {
       this.approvalToRecallMap.set(key, [...new Set([...existingApproval, ...related])]);
     }
@@ -334,7 +357,9 @@ export class RecallNotifierModule {
   }
 
   clearAll(): void {
-    this.notices = [...DEFAULT_RECALL_NOTICES];
+    const dedupMap = new Map<string, RecallNotice>();
+    DEFAULT_RECALL_NOTICES.forEach(n => dedupMap.set(n.recallId, n));
+    this.notices = Array.from(dedupMap.values());
     this.explicitMappings = [];
     this.buildDefaultIndexes();
   }
